@@ -4,12 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Emotion Vortex</title>
-
-  <!-- Link to your CSS inside static/uploads -->
   <link rel="stylesheet" href="{{ url_for('static', filename='uploads/style.css') }}">
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
-
 <body>
   <div class="container">
     <header>
@@ -57,6 +54,9 @@
   </div>
 
   <script>
+    // Base URL for backend (works locally & on Render)
+    const baseURL = window.location.origin;
+
     // Switch tabs
     function openTab(tabName) {
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -78,7 +78,7 @@
       formData.append('image', document.getElementById('image').files[0]);
 
       try {
-        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const res = await fetch(`${baseURL}/upload`, { method: 'POST', body: formData });
         const data = await res.json();
 
         if (data.error) {
@@ -116,7 +116,7 @@
       const dataUrl = canvas.toDataURL('image/jpeg');
 
       try {
-        const res = await fetch('/webcam', {
+        const res = await fetch(`${baseURL}/webcam`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ image: dataUrl, name })
@@ -140,7 +140,7 @@
       document.getElementById('result-name').textContent = name;
       document.getElementById('emotion').textContent = data.emotion;
       document.getElementById('emotion').className = 'emotion-tag ' + data.emotion.toLowerCase();
-      document.getElementById('confidence').textContent = (data.confidence).toFixed(1);
+      document.getElementById('confidence').textContent = data.confidence.toFixed(1);
     }
 
     // Stop webcam on unload
