@@ -1,169 +1,172 @@
-# app.py — Optimized Local Version
-from flask import Flask, render_template, request, jsonify
-import cv2
-import numpy as np
 import os
 import sqlite3
-from datetime import datetime
-from tensorflow.keras.models import load_model
 import base64
+import numpy as np
+from datetime import datetime
+from flask import Flask, render_template, request, jsonify, url_for
+from tensorflow.keras.models import load_model
+from tensorflow.keras.preprocessing.image import img_to_array
+from PIL import Image
+import io
 import threading
 
 # -------------------------------
-# CONFIGURATION
+# Flask App Initialization
 # -------------------------------
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.config['UPLOAD_FOLDER'] = 'static/uploads'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+app = Flask(__name__)
 
-MODEL_PATH = 'emotion_model_vortex.h5'
-DB_PATH = 'emotions.db'
-EMOTIONS = ['angry', 'disgust', 'fear', 'happy', 'neutral', 'sad', 'surprise']
+# Set upload folder
+UPLOAD_FOLDER = os.path.join("static", "uploads")
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # -------------------------------
-# LOAD MODEL (Thread-safe)
+# Database Setup
 # -------------------------------
-if not os.path.exists(MODEL_PATH):
-    raise FileNotFoundError(f"❌ Model not found at {MODEL_PATH}")
+DB_PATH = "database.db"
 
-print("✅ Loading model...")
-MODEL = load_model(MODEL_PATH)
-MODEL_LOCK = threading.Lock()
-print("✅ Model loaded successfully!")
-
-# -------------------------------
-# DATABASE FUNCTIONS
-# -------------------------------
 def init_db():
-    """Initialize the SQLite database."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('''
-            CREATE TABLE IF NOT EXISTS detections (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT,
-                image_path TEXT,
-                emotion TEXT,
-                confidence REAL,
-                timestamp TEXT
-            )
-        ''')
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS detections (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            image_path TEXT,
+            emotion TEXT,
+            confidence REAL,
+            timestamp TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-def save_to_db(name, image_path, emotion, confidence):
-    """Save prediction results into database."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute('''
-            INSERT INTO detections (name, image_path, emotion, confidence, timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (name, image_path, emotion, confidence, timestamp))
-
-# Initialize DB at startup
 init_db()
 
 # -------------------------------
-# IMAGE PREPROCESSING
+# Load the Model
 # -------------------------------
-def preprocess_image(img):
-    """Convert image to grayscale, resize, normalize, and reshape for CNN."""
-    if img is None:
-        raise ValueError("Invalid image input for preprocessing.")
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
-    resized = cv2.resize(gray, (48, 48))
-    norm = resized.astype('float32') / 255.0
-    return np.expand_dims(norm, axis=(0, -1))
+MODEL_PATH = "face_emotionModel.h5"
+MODEL_LOCK = threading.Lock()
+
+try:
+    model = load_model(MODEL_PATH)
+    print("✅ Model loaded successfully!")
+except Exception as e:
+    print("❌ Error loading model:", e)
+
+# Define emotion labels
+emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise']
 
 # -------------------------------
-# PREDICTION FUNCTION
+# Helper: Predict Emotion
 # -------------------------------
 def predict_emotion(img):
-    """Run model prediction thread-safely."""
-    processed = preprocess_image(img)
-    with MODEL_LOCK:
-        preds = MODEL.predict(processed, verbose=0)[0]
-    idx = np.argmax(preds)
-    return EMOTIONS[idx], float(preds[idx])
+    try:
+        img = img.convert("L")  # grayscale
+        img = img.resize((48, 48))
+        img_array = img_to_array(img) / 255.0
+        img_array = np.expand_dims(img_array, axis=0)
+
+        with MODEL_LOCK:
+            preds = model.predict(img_array, verbose=0)[0]
+        
+        emotion_idx = np.argmax(preds)
+        emotion = emotion_labels[emotion_idx]
+        confidence = float(preds[emotion_idx])
+        return emotion, confidence
+    except Exception as e:
+        print("Prediction error:", e)
+        return None, None
 
 # -------------------------------
-# ROUTES
+# Routes
 # -------------------------------
-@app.route('/')
-def index():
-    return render_template('index.html')
+@app.route("/")
+def home():
+    return render_template("index.html")
 
-@app.route('/upload', methods=['POST'])
+@app.route("/upload", methods=["POST"])
 def upload():
     try:
-        name = request.form.get('name', '').strip()
-        file = request.files.get('image')
+        name = request.form.get("name")
+        if "image" not in request.files:
+            return jsonify({"error": "No image uploaded."})
 
-        if not name or not file:
-            return jsonify({'error': 'Missing name or image'}), 400
+        file = request.files["image"]
+        if file.filename == "":
+            return jsonify({"error": "No image selected."})
 
-        # Save uploaded image
-        filename = f"{int(datetime.now().timestamp())}_{name}.jpg"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
+        # Save file to static/uploads/
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
 
-        # Predict
-        img = cv2.imread(filepath)
+        # Predict emotion
+        img = Image.open(file.stream)
         emotion, confidence = predict_emotion(img)
+        if emotion is None:
+            return jsonify({"error": "Failed to analyze emotion."})
 
         # Save to DB
-        rel_path = f"static/uploads/{filename}"
-        save_to_db(name, rel_path, emotion, confidence)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO detections (name, image_path, emotion, confidence, timestamp) VALUES (?, ?, ?, ?, ?)",
+                  (name, file_path, emotion, confidence, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
 
+        # Return result to front-end
         return jsonify({
-            'emotion': emotion,
-            'confidence': round(confidence, 3),
-            'image_url': rel_path
+            "emotion": emotion,
+            "confidence": round(confidence * 100, 2),
+            "image_url": url_for("static", filename=f"uploads/{filename}")
         })
 
     except Exception as e:
-        print("❌ Upload error:", e)
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)})
 
-
-@app.route('/webcam', methods=['POST'])
+@app.route("/webcam", methods=["POST"])
 def webcam():
     try:
-        data = request.get_json()
-        name = data.get('name', '').strip()
-        image_data = data.get('image', '')
+        name = request.form.get("name")
+        data_url = request.form.get("image")
+        if not data_url:
+            return jsonify({"error": "No webcam data received."})
 
-        if not name or not image_data:
-            return jsonify({'error': 'Missing name or image data'}), 400
+        # Decode base64 image
+        image_data = base64.b64decode(data_url.split(",")[1])
+        img = Image.open(io.BytesIO(image_data))
 
-        # Decode base64 webcam image
-        nparr = np.frombuffer(base64.b64decode(image_data.split(',')[1]), np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-        # Save frame
-        filename = f"webcam_{int(datetime.now().timestamp())}_{name}.jpg"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        cv2.imwrite(filepath, img)
-
-        # Predict
+        # Predict emotion
         emotion, confidence = predict_emotion(img)
+        if emotion is None:
+            return jsonify({"error": "Failed to analyze webcam image."})
+
+        # Save image to uploads
+        filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_webcam.jpg"
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        img.save(file_path)
 
         # Save to DB
-        rel_path = f"static/uploads/{filename}"
-        save_to_db(name, rel_path, emotion, confidence)
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("INSERT INTO detections (name, image_path, emotion, confidence, timestamp) VALUES (?, ?, ?, ?, ?)",
+                  (name, file_path, emotion, confidence, datetime.now().isoformat()))
+        conn.commit()
+        conn.close()
 
         return jsonify({
-            'emotion': emotion,
-            'confidence': round(confidence, 3),
-            'image_url': rel_path
+            "emotion": emotion,
+            "confidence": round(confidence * 100, 2),
+            "image_url": url_for("static", filename=f"uploads/{filename}")
         })
 
     except Exception as e:
-        print("❌ Webcam error:", e)
-        return jsonify({'error': str(e)}), 500
-
+        return jsonify({"error": str(e)})
 
 # -------------------------------
-# RUN APP
+# Run App
 # -------------------------------
-if __name__ == '__main__':
-    print("🚀 Emotion Vortex running at: http://127.0.0.1:5000")
-    print("Press Ctrl+C to stop")
-    app.run(host='127.0.0.1', port=5000, debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))  # Render requires this
+    app.run(host="0.0.0.0", port=port, debug=False)
