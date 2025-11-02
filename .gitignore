@@ -1,8 +1,24 @@
+# Byte-compiled / cache
 __pycache__/
 *.pyc
+
+# Virtual environments
+venv/
+.env/
+
+# Databases and large data
 *.db
 *.h5
+*.csv
 *.png
-.env
+*.jpg
+*.jpeg
+
+# Uploads & output folders
 static/uploads/*
 output/*
+training_plot.png
+
+# OS files
+.DS_Store
+Thumbs.db
