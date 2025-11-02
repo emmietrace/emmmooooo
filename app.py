@@ -128,8 +128,18 @@ def upload():
 @app.route("/webcam", methods=["POST"])
 def webcam():
     try:
-        name = request.form.get("name")
-        data_url = request.form.get("image")
+        # Handle both JSON and form-data
+        if request.is_json:
+            data = request.get_json()
+            name = data.get("name")
+            data_url = data.get("image")
+        else:
+            name = request.form.get("name")
+            data_url = request.form.get("image")
+
+        print("📷 [WEBCAM] Name:", name)
+        print("📷 [WEBCAM] Data URL length:", len(data_url) if data_url else 0)
+
         if not data_url:
             return jsonify({"error": "No webcam data received."})
 
@@ -162,7 +172,9 @@ def webcam():
         })
 
     except Exception as e:
+        print("❌ [WEBCAM] Error:", e)
         return jsonify({"error": str(e)})
+
 
 # -------------------------------
 # Run App
