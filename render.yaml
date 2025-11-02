@@ -2,9 +2,9 @@ services:
   - type: web
     name: emotion-vortex
     env: python
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app
-    plan: free
     envVars:
-      - key: PORT
-        value: 5000
+      - key: PYTHON_VERSION
+        value: 3.10
