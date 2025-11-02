@@ -22,7 +22,7 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 # -------------------------------
 # Database Setup
 # -------------------------------
-DB_PATH = "database.db"
+DB_PATH = "emotions.db"
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
