@@ -10,20 +10,16 @@ from PIL import Image
 import io
 import threading
 
-# -------------------------------
-# Flask App Initialization
-# -------------------------------
 app = Flask(__name__)
 
-# Set upload folder
+# Upload folder (inside static/uploads)
 UPLOAD_FOLDER = os.path.join("static", "uploads")
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# -------------------------------
-# Database Setup
-# -------------------------------
+# Database path
 DB_PATH = "emotions.db"
 
+# Initialize SQLite database
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -42,9 +38,7 @@ def init_db():
 
 init_db()
 
-# -------------------------------
-# Load the Model
-# -------------------------------
+# Load emotion detection model
 MODEL_PATH = "emotion_model_vortex.h5"
 MODEL_LOCK = threading.Lock()
 
@@ -54,22 +48,20 @@ try:
 except Exception as e:
     print("❌ Error loading model:", e)
 
-# Define emotion labels
+# Emotion labels
 emotion_labels = ['Angry', 'Disgust', 'Fear', 'Happy', 'Neutral', 'Sad', 'Surprise']
 
-# -------------------------------
-# Helper: Predict Emotion
-# -------------------------------
+# Predict emotion function
 def predict_emotion(img):
     try:
-        img = img.convert("L")  # grayscale
+        img = img.convert("L")
         img = img.resize((48, 48))
         img_array = img_to_array(img) / 255.0
         img_array = np.expand_dims(img_array, axis=0)
 
         with MODEL_LOCK:
             preds = model.predict(img_array, verbose=0)[0]
-        
+
         emotion_idx = np.argmax(preds)
         emotion = emotion_labels[emotion_idx]
         confidence = float(preds[emotion_idx])
@@ -78,13 +70,13 @@ def predict_emotion(img):
         print("Prediction error:", e)
         return None, None
 
-# -------------------------------
-# Routes
-# -------------------------------
+
 @app.route("/")
 def home():
     return render_template("index.html")
 
+
+# Upload image route
 @app.route("/upload", methods=["POST"])
 def upload():
     try:
@@ -96,18 +88,15 @@ def upload():
         if file.filename == "":
             return jsonify({"error": "No image selected."})
 
-        # Save file to static/uploads/
         filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{file.filename}"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         file.save(file_path)
 
-        # Predict emotion
-        img = Image.open(file.stream)
+        img = Image.open(file_path)
         emotion, confidence = predict_emotion(img)
         if emotion is None:
             return jsonify({"error": "Failed to analyze emotion."})
 
-        # Save to DB
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("INSERT INTO detections (name, image_path, emotion, confidence, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -115,49 +104,41 @@ def upload():
         conn.commit()
         conn.close()
 
-        # Return result to front-end
         return jsonify({
             "emotion": emotion,
             "confidence": round(confidence * 100, 2),
             "image_url": url_for("static", filename=f"uploads/{filename}")
         })
-
     except Exception as e:
+        print("❌ Upload route error:", e)
         return jsonify({"error": str(e)})
 
+
+# Webcam route (fixed to handle JSON correctly)
 @app.route("/webcam", methods=["POST"])
 def webcam():
     try:
-        # Handle both JSON and form-data
-        if request.is_json:
-            data = request.get_json()
-            name = data.get("name")
-            data_url = data.get("image")
-        else:
-            name = request.form.get("name")
-            data_url = request.form.get("image")
+        data = request.get_json()
+        print("Received data:", data)  # Debugging
+        if not data:
+            return jsonify({"error": "No JSON data received."})
 
-        print("📷 [WEBCAM] Name:", name)
-        print("📷 [WEBCAM] Data URL length:", len(data_url) if data_url else 0)
-
+        name = data.get("name")
+        data_url = data.get("image")
         if not data_url:
             return jsonify({"error": "No webcam data received."})
 
-        # Decode base64 image
         image_data = base64.b64decode(data_url.split(",")[1])
         img = Image.open(io.BytesIO(image_data))
 
-        # Predict emotion
         emotion, confidence = predict_emotion(img)
         if emotion is None:
             return jsonify({"error": "Failed to analyze webcam image."})
 
-        # Save image to uploads
         filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_webcam.jpg"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         img.save(file_path)
 
-        # Save to DB
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("INSERT INTO detections (name, image_path, emotion, confidence, timestamp) VALUES (?, ?, ?, ?, ?)",
@@ -170,15 +151,11 @@ def webcam():
             "confidence": round(confidence * 100, 2),
             "image_url": url_for("static", filename=f"uploads/{filename}")
         })
-
     except Exception as e:
-        print("❌ [WEBCAM] Error:", e)
+        print("❌ Webcam route error:", e)
         return jsonify({"error": str(e)})
 
 
-# -------------------------------
-# Run App
-# -------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render requires this
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=False)
