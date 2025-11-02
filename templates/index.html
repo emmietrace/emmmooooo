@@ -4,8 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Emotion Vortex</title>
- <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
@@ -55,7 +54,7 @@
   </div>
 
   <script>
-    // Tab switching
+    // Switch tabs
     function openTab(tabName) {
       document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -64,20 +63,35 @@
       if (tabName === 'webcam') startWebcam();
     }
 
-    // Upload form
+    // Upload form submit
     document.getElementById('upload-form').onsubmit = async (e) => {
       e.preventDefault();
+      const analyzeBtn = document.getElementById('analyze-button');
+      analyzeBtn.textContent = "Analyzing...";
+      analyzeBtn.disabled = true;
+
       const formData = new FormData();
       formData.append('name', document.getElementById('name-upload').value);
       formData.append('image', document.getElementById('image').files[0]);
 
-      const res = await fetch('/upload', { method: 'POST', body: formData });
-      const data = await res.json();
-      document.getElementById("analyze-button").value = "Analyzing";
-      if (data.emotion) showResult(data, document.getElementById('name-upload').value);
+      try {
+        const res = await fetch('/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.error) {
+          alert("Error: " + data.error);
+        } else {
+          showResult(data, document.getElementById('name-upload').value);
+        }
+      } catch (err) {
+        alert("Failed to connect to server.");
+      } finally {
+        analyzeBtn.textContent = "Analyze Emotion";
+        analyzeBtn.disabled = false;
+      }
     };
 
-    // Webcam
+    // Webcam logic
     let stream;
     function startWebcam() {
       if (stream) return;
@@ -85,25 +99,38 @@
         .then(s => {
           stream = s;
           document.getElementById('video').srcObject = s;
-        }).catch(err => alert("Camera access denied"));
+        })
+        .catch(() => alert("Camera access denied."));
     }
 
     document.getElementById('capture').onclick = async () => {
+      const name = document.getElementById('name-webcam').value.trim();
+      if (!name) return alert("Please enter your name first.");
+
       const canvas = document.getElementById('canvas');
       const ctx = canvas.getContext('2d');
       ctx.drawImage(document.getElementById('video'), 0, 0, 48, 48);
       const dataUrl = canvas.toDataURL('image/jpeg');
-      const name = document.getElementById('name-webcam').value;
 
-      const res = await fetch('/webcam', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: dataUrl, name })
-      });
-      const data = await res.json();
-      if (data.emotion) showResult(data, name);
+      try {
+        const res = await fetch('/webcam', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl, name })
+        });
+        const data = await res.json();
+
+        if (data.error) {
+          alert("Error: " + data.error);
+        } else {
+          showResult(data, name);
+        }
+      } catch {
+        alert("Failed to connect to server.");
+      }
     };
 
+    // Display result
     function showResult(data, name) {
       document.getElementById('result').classList.remove('hidden');
       document.getElementById('result-img').src = '/' + data.image_url + '?t=' + Date.now();
@@ -113,7 +140,7 @@
       document.getElementById('confidence').textContent = (data.confidence * 100).toFixed(1);
     }
 
-    // Stop webcam on tab change
+    // Stop webcam on unload
     window.addEventListener('beforeunload', () => {
       if (stream) stream.getTracks().forEach(t => t.stop());
     });
