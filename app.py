@@ -45,7 +45,7 @@ init_db()
 # -------------------------------
 # Load the Model
 # -------------------------------
-MODEL_PATH = "face_emotionModel.h5"
+MODEL_PATH = "emotion_model_vortex.h5"
 MODEL_LOCK = threading.Lock()
 
 try:
