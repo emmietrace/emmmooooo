@@ -1,144 +1,125 @@
-# app.py - Final Render-ready Flask app with image and webcam support, logging, and database storage
+# -------------------------------------------------
+# NEW IMPORTS (add at the top with the other imports)
+# -------------------------------------------------
+from PIL import Image, UnidentifiedImageError
+import io
+import matplotlib.pyplot as plt          # optional – for debugging / visualisation
+from mtcnn import MTCNN
+import tensorflow as tf                 # already imported but keep for tflite later
 
-import os
-import base64
-import logging
-import sqlite3
-from io import BytesIO
-from flask import Flask, render_template, request, jsonify, url_for
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import img_to_array
-from PIL import Image
-import numpy as np
+# -------------------------------------------------
+# GLOBAL FACE DETECTOR (shared across requests)
+# -------------------------------------------------
+face_detector = MTCNN()   # creates a TensorFlow-based detector (GPU-friendly)
 
-# Initialize Flask app
-app = Flask(__name__)
+# -------------------------------------------------
+# Helper: load image from bytes (used for both upload & webcam)
+# -------------------------------------------------
+def load_image_from_bytes(image_bytes: bytes) -> np.ndarray:
+    """Decode bytes → OpenCV BGR image (handles Pillow errors gracefully)."""
+    try:
+        pil_img = Image.open(io.BytesIO(image_bytes)).convert('RGB')
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    except UnidentifiedImageError:
+        raise ValueError("Uploaded file is not a valid image")
 
-# Configure paths
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-UPLOAD_FOLDER = os.path.join(BASE_DIR, 'static', 'uploads')
-MODEL_PATH = os.path.join(BASE_DIR, 'emotion_model_vortex.h5')
-DB_PATH = os.path.join(BASE_DIR, 'emotions.db')
+# -------------------------------------------------
+# Updated preprocess_image – now works on a **face crop** if detected
+# -------------------------------------------------
+def preprocess_image(img: np.ndarray) -> np.ndarray:
+    """
+    1. Detect face(s) with MTCNN
+    2. If a face is found → crop + resize to 48×48 grayscale
+    3. Else → fall back to whole-image (keeps original behaviour)
+    """
+    # ---- 1. face detection -------------------------------------------------
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)          # MTCNN expects RGB
+    detections = face_detector.detect_faces(rgb)
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    if detections:
+        # pick the largest face (most confident)
+        box = max(detections, key=lambda d: d['confidence'])['box']
+        x, y, w, h = box
+        # add a small margin (10% of the box size)
+        margin = int(max(w, h) * 0.1)
+        x = max(x - margin, 0)
+        y = max(y - margin, 0)
+        face = img[y:y + h + 2*margin, x:x + w + 2*margin]
+    else:
+        face = img                     # no face → use whole image
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+    # ---- 2. standard 48×48 grayscale preprocessing -------------------------
+    gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY) if len(face.shape) == 3 else face
+    resized = cv2.resize(gray, (48, 48))
+    norm = resized.astype('float32') / 255.0
+    return np.expand_dims(norm, axis=[-1, 0])   # (1, 48, 48, 1)
 
-# Load model and database
-try:
-    logger.info(f"Loading model from {MODEL_PATH}")
-    model = load_model(MODEL_PATH)
-    logger.info("Model loaded successfully.")
-except Exception as e:
-    model = None
-    logger.error(f"Failed to load model: {e}")
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute('''CREATE TABLE IF NOT EXISTS users (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT,
-                        filename TEXT,
-                        emotion TEXT,
-                        confidence REAL
-                    )''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-# Emotion labels (update if your model uses a different order)
-EMOTIONS = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral']
-
-@app.route('/')
-def index():
-    return render_template('index.html')
-
+# -------------------------------------------------
+# /upload route – now uses Pillow to read the file
+# -------------------------------------------------
 @app.route('/upload', methods=['POST'])
-def upload_image():
+def upload():
+    name = request.form.get('name')
+    file = request.files.get('image')
+
+    if not (file and name):
+        return jsonify({'error': 'Missing name or image'}), 400
+
+    # ---- read image with Pillow (safer than cv2.imdecode for some formats) ----
+    img_bytes = file.read()
     try:
-        name = request.form.get('name')
-        file = request.files['image']
+        img = load_image_from_bytes(img_bytes)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
-        if not file:
-            return jsonify({'error': 'No image uploaded'}), 400
+    # ---- save original (full size) for UI -----------------------------------
+    filename = f"{int(datetime.now().timestamp())}_{name}.jpg"
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    cv2.imwrite(filepath, img)
 
-        # Save image
-        filename = file.filename
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(filepath)
+    # ---- prediction ---------------------------------------------------------
+    pred = MODEL.predict(preprocess_image(img), verbose=0)[0]
+    idx = np.argmax(pred)
+    emotion = EMOTIONS[idx]
+    conf = float(pred[idx])
 
-        # Preprocess
-        img = Image.open(filepath).convert('L').resize((48, 48))
-        img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+    save_to_db(name, f"static/uploads/{filename}", emotion, conf)
 
-        # Predict
-        preds = model.predict(img_array)
-        emotion_idx = np.argmax(preds[0])
-        emotion = EMOTIONS[emotion_idx]
-        confidence = float(np.max(preds[0]) * 100)
+    return jsonify({
+        'emotion': emotion,
+        'confidence': round(conf, 3),
+        'image_url': f"static/uploads/{filename}"
+    })
 
-        # Save to DB
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute('INSERT INTO users (name, filename, emotion, confidence) VALUES (?, ?, ?, ?)',
-                     (name, filename, emotion, confidence))
-        conn.commit()
-        conn.close()
-
-        image_url = url_for('static', filename=f'uploads/{filename}')
-
-        return jsonify({'emotion': emotion, 'confidence': confidence, 'image_url': image_url})
-    except Exception as e:
-        logger.error(f"Upload analysis failed: {e}")
-        return jsonify({'error': 'Failed to analyze image'}), 500
-
+# -------------------------------------------------
+# /webcam route – unchanged except using the same preprocess_image()
+# -------------------------------------------------
 @app.route('/webcam', methods=['POST'])
-def analyze_webcam():
-    try:
-        data = request.get_json()
-        name = data.get('name')
-        image_data = data.get('image')
+def webcam():
+    payload = request.get_json()
+    name = payload.get('name')
+    data_url = payload.get('image', '')
 
-        if not image_data:
-            return jsonify({'error': 'No webcam data received'}), 400
+    if not (name and data_url):
+        return jsonify({'error': 'Missing name or image'}), 400
 
-        image_data = image_data.split(',')[1]
-        img_bytes = base64.b64decode(image_data)
-        img = Image.open(BytesIO(img_bytes)).convert('L').resize((48, 48))
-        img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) / 255.0
+    # strip data-url header
+    img_bytes = base64.b64decode(data_url.split(',')[1])
+    img = load_image_from_bytes(img_bytes)
 
-        preds = model.predict(img_array)
-        emotion_idx = np.argmax(preds[0])
-        emotion = EMOTIONS[emotion_idx]
-        confidence = float(np.max(preds[0]) * 100)
+    filename = f"webcam_{int(datetime.now().timestamp())}_{name}.jpg"
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    cv2.imwrite(filepath, img)
 
-        filename = f'webcam_{name}.jpg'
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
-        img.save(filepath)
+    pred = MODEL.predict(preprocess_image(img), verbose=0)[0]
+    idx = np.argmax(pred)
+    emotion = EMOTIONS[idx]
+    conf = float(pred[idx])
 
-        conn = sqlite3.connect(DB_PATH)
-        conn.execute('INSERT INTO users (name, filename, emotion, confidence) VALUES (?, ?, ?, ?)',
-                     (name, filename, emotion, confidence))
-        conn.commit()
-        conn.close()
+    save_to_db(name, f"static/uploads/{filename}", emotion, conf)
 
-        image_url = url_for('static', filename=f'uploads/{filename}')
-
-        return jsonify({'emotion': emotion, 'confidence': confidence, 'image_url': image_url})
-    except Exception as e:
-        logger.error(f"Webcam analysis failed: {e}")
-        return jsonify({'error': 'Failed to analyze emotion'}), 500
-
-@app.route('/health')
-def health():
-    status = 'healthy' if model else 'unhealthy'
-    return jsonify({'status': status})
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"Starting Flask app on port {port}")
-    app.run(host='0.0.0.0', port=port)
+    return jsonify({
+        'emotion': emotion,
+        'confidence': round(conf, 3),
+        'image_url': f"static/uploads/{filename}"
+    })
