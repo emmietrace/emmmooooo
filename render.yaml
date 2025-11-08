@@ -3,4 +3,6 @@ services:
     name: emotion-vortex
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app --workers 1 --timeout 200 --preload false
+    startCommand: gunicorn app:app
+    plan: free
+    pythonVersion: "3.12"   # ← THIS LINE
